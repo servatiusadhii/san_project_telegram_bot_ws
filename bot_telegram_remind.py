@@ -1,9 +1,9 @@
 import os
 import json
+import asyncio
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -124,15 +124,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ws = get_user_sheet(chat_id)
 
-    # ================= INPUT HARIAN =================
     if text in ["💰 Pemasukan", "💸 Pengeluaran"]:
         context.user_data["type"] = "Pemasukan" if "Pemasukan" in text else "Pengeluaran"
         await update.message.reply_text("Masukkan nominal transaksi:")
-
     elif "type" in context.user_data and text.isdigit():
         context.user_data["amount"] = int(text)
         await update.message.reply_text("Tambahkan catatan transaksi:")
-
     elif "amount" in context.user_data:
         loading = await update.message.reply_text("⏳ Sedang memproses...")
         tipe = context.user_data["type"]
@@ -158,8 +155,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += "\n🚨 LEAK! Pengeluaran melebihi pemasukan."
 
         await loading.edit_text(msg)
-
-    # ================= MENU =================
     elif text == "📊 Summary":
         loading = await update.message.reply_text("⏳ Sedang memproses...")
         pemasukan = get_total(ws, "Pemasukan")
@@ -173,7 +168,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🧮 Sisa dana : {rupiah(pemasukan - pengeluaran)}\n"
             f"💼 Saldo total : {rupiah(saldo)}"
         )
-
     elif text == "📋 Catatan Hari Ini":
         loading = await update.message.reply_text("⏳ Sedang memproses...")
         data = get_rows_by_date(ws, today())
@@ -189,7 +183,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Leak : {r['leak']}\n\n"
             )
         await loading.edit_text(msg)
-
     elif text == "📈 Lihat Spreadsheet":
         await update.message.reply_text("📧 Masukkan email untuk dibagikan akses spreadsheet:")
         context.user_data["awaiting_email"] = True
@@ -203,32 +196,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     import sys
 
-    if "--daily-summary" in sys.argv:
-        send_all_users_summary()
-    else:
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-        # ===== DAILY SUMMARY JOB QUEUE =====
-        async def send_all_users_summary_job(context):
+    # ===== DAILY SCHEDULER =====
+    async def daily_scheduler():
+        while True:
+            now = datetime.now()
+            target = now.replace(hour=0, minute=1, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            wait_seconds = (target - now).total_seconds()
+            
+            # sleep per 60 detik supaya bot tetap responsive
+            while wait_seconds > 0:
+                sleep_time = min(wait_seconds, 60)
+                await asyncio.sleep(sleep_time)
+                wait_seconds -= sleep_time
+
             try:
                 print(f"📬 Mengirim daily summary ke semua user ({datetime.now()})")
                 send_all_users_summary()
             except Exception as e:
                 print(f"❌ Error saat daily summary: {e}")
 
-        job_queue = app.job_queue
+    # jalankan bot + scheduler bersamaan
+    async def main():
+        task_bot = asyncio.create_task(app.run_polling())
+        task_sched = asyncio.create_task(daily_scheduler())
+        await asyncio.gather(task_bot, task_sched)
 
-        # hitung detik sampai jam 00:01
-        now = datetime.now()
-        target = now.replace(hour=0, minute=1, second=0, microsecond=0)
-        if now >= target:
-            target += timedelta(days=1)
-        delay_seconds = (target - now).total_seconds()
-
-        # jalankan job tiap 24 jam, mulai dari delay_seconds
-        job_queue.run_repeating(send_all_users_summary_job, interval=86400, first=delay_seconds)
-
-        print("🤖 Bot keuangan running...")
-        app.run_polling()
+    asyncio.run(main())
