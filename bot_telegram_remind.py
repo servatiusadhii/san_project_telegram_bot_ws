@@ -1,9 +1,9 @@
 import os
 import json
-import asyncio
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -200,7 +200,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
 
 # ================= MAIN =================
-# ================= MAIN =================
 if __name__ == "__main__":
     import sys
 
@@ -211,31 +210,25 @@ if __name__ == "__main__":
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-        # ===== DAILY SCHEDULER AMAN =====
-        async def daily_scheduler():
-            while True:
-                now = datetime.now()
-                # target jam 00:01 hari ini atau besok
-                target = now.replace(hour=0, minute=1, second=0, microsecond=0)
-                if now >= target:
-                    target += timedelta(days=1)
-                wait_seconds = (target - now).total_seconds()
-                
-                # sleep **maksimal 60 detik per iterasi** biar bot tetap responsive
-                while wait_seconds > 0:
-                    sleep_time = min(wait_seconds, 60)
-                    await asyncio.sleep(sleep_time)
-                    wait_seconds -= sleep_time
+        # ===== DAILY SUMMARY JOB QUEUE =====
+        async def send_all_users_summary_job(context):
+            try:
+                print(f"📬 Mengirim daily summary ke semua user ({datetime.now()})")
+                send_all_users_summary()
+            except Exception as e:
+                print(f"❌ Error saat daily summary: {e}")
 
-                # kirim daily summary
-                try:
-                    print(f"📬 Mengirim daily summary ke semua user ({datetime.now()})")
-                    send_all_users_summary()
-                except Exception as e:
-                    print(f"❌ Error saat daily summary: {e}")
+        job_queue = app.job_queue
 
-        # buat task scheduler
-        app.create_task(daily_scheduler())
+        # hitung detik sampai jam 00:01
+        now = datetime.now()
+        target = now.replace(hour=0, minute=1, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        delay_seconds = (target - now).total_seconds()
+
+        # jalankan job tiap 24 jam, mulai dari delay_seconds
+        job_queue.run_repeating(send_all_users_summary_job, interval=86400, first=delay_seconds)
 
         print("🤖 Bot keuangan running...")
         app.run_polling()
