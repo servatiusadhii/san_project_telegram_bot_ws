@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, Bot
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
@@ -199,6 +200,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
 
 # ================= MAIN =================
+# ================= MAIN =================
 if __name__ == "__main__":
     import sys
 
@@ -209,24 +211,31 @@ if __name__ == "__main__":
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-        # ===== DAILY SCHEDULER FIX =====
+        # ===== DAILY SCHEDULER AMAN =====
         async def daily_scheduler():
             while True:
                 now = datetime.now()
-                # hitung detik sampai jam 00:01
-                target = (datetime.now() + timedelta(days=1)).replace(hour=0, minute=1, second=0, microsecond=0)
+                # target jam 00:01 hari ini atau besok
+                target = now.replace(hour=0, minute=1, second=0, microsecond=0)
+                if now >= target:
+                    target += timedelta(days=1)
                 wait_seconds = (target - now).total_seconds()
-                print(f"⏳ Menunggu {wait_seconds:.0f} detik sampai daily summary...")
-                await asyncio.sleep(wait_seconds)
-                print("📬 Mengirim daily summary ke semua user...")
+                
+                # sleep **maksimal 60 detik per iterasi** biar bot tetap responsive
+                while wait_seconds > 0:
+                    sleep_time = min(wait_seconds, 60)
+                    await asyncio.sleep(sleep_time)
+                    wait_seconds -= sleep_time
+
+                # kirim daily summary
                 try:
+                    print(f"📬 Mengirim daily summary ke semua user ({datetime.now()})")
                     send_all_users_summary()
                 except Exception as e:
                     print(f"❌ Error saat daily summary: {e}")
 
-        # Tambahkan scheduler **setelah build bot tapi sebelum run_polling**
+        # buat task scheduler
         app.create_task(daily_scheduler())
 
         print("🤖 Bot keuangan running...")
         app.run_polling()
-
