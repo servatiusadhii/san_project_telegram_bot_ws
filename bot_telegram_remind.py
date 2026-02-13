@@ -1,4 +1,4 @@
-import os, json, tempfile, asyncio
+import os, json, tempfile
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -10,6 +10,7 @@ from telegram import (
     InputFile,
 )
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
@@ -69,9 +70,7 @@ def get_user_sheet(chat_id):
         ws = spreadsheet.worksheet(name)
     except gspread.exceptions.WorksheetNotFound:
         ws = spreadsheet.add_worksheet(title=name, rows=3000, cols=10)
-        ws.append_row(
-            ["timestamp", "type", "amount", "note", "leak", "saldo"]
-        )
+        ws.append_row(["timestamp", "type", "amount", "note", "leak", "saldo"])
     return ws
 
 def get_all_rows(ws):
@@ -204,7 +203,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     ws = get_user_sheet(chat_id)
 
-    # ===== INPUT FLOW =====
     if text in ["💰 Pemasukan", "💸 Pengeluaran"]:
         context.user_data["type"] = "Pemasukan" if "Pemasukan" in text else "Pengeluaran"
         await update.message.reply_text("Masukkan nominal:")
@@ -222,8 +220,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
 
         msg = (
-            f"✅ {tipe} dicatat\n"
-            f"{now_full()}\n\n"
+            f"✅ {tipe} dicatat\n{now_full()}\n\n"
             f"{rupiah(amount)}\n{note}\n\n"
             f"💰 {rupiah(pemasukan)}\n"
             f"💸 {rupiah(pengeluaran)}\n"
@@ -235,12 +232,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(msg, reply_markup=MAIN_KEYBOARD)
 
-        df = get_all_rows(ws)
-        warning = detect_today_almost_boros(df)
-        if warning:
-            await update.message.reply_text(warning)
+        warn = detect_today_almost_boros(get_all_rows(ws))
+        if warn:
+            await update.message.reply_text(warn)
 
-    # ===== SUMMARY =====
     elif text == "📊 Summary":
         df = get_all_rows(ws)
         today_df = df[df["timestamp"].dt.strftime("%Y-%m-%d") == today()]
@@ -256,7 +251,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💼 Saldo {rupiah(saldo)}"
         )
 
-    # ===== CATATAN =====
     elif text == "📋 Catatan Hari Ini":
         df = get_all_rows(ws)
         today_df = df[df["timestamp"].dt.strftime("%Y-%m-%d") == today()]
@@ -270,7 +264,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(msg)
 
-    # ===== SHARE SHEET =====
     elif text == "📈 Share Spreadsheet":
         context.user_data["awaiting_email"] = True
         await update.message.reply_text("Masukkan email Google:")
@@ -280,7 +273,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await update.message.reply_text("✅ Spreadsheet dibagikan", reply_markup=MAIN_KEYBOARD)
 
-    # ===== CHART MENU =====
     elif text == "📊 Menu Chart":
         await update.message.reply_text("📊 Pilih chart:", reply_markup=CHART_KEYBOARD)
 
@@ -330,33 +322,31 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE):
             f"🧮 Sisa {rupiah(pemasukan - pengeluaran)}"
         )
 
-        chart = generate_daily_chart(df)
-        if chart:
-            await context.bot.send_photo(chat_id, InputFile(chart))
-
-        warn = detect_today_almost_boros(df)
-        if warn:
-            await context.bot.send_message(chat_id, warn)
-
 # ================= MAIN =================
-async def main():
+def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    await app.bot.delete_webhook(drop_pending_updates=True)
+    async def post_init(application: Application):
+        await application.bot.delete_webhook(drop_pending_updates=True)
 
-    now = datetime.now()
-    target = now.replace(hour=0, minute=1, second=0, microsecond=0)
-    if now >= target:
-        target += timedelta(days=1)
-    delay = (target - now).total_seconds()
+        now = datetime.now()
+        target = now.replace(hour=0, minute=1, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        delay = (target - now).total_seconds()
 
-    app.job_queue.run_repeating(daily_job, interval=86400, first=delay)
+        application.job_queue.run_repeating(
+            daily_job, interval=86400, first=delay
+        )
+
+    app.post_init = post_init
 
     print("🤖 Bot keuangan running...")
-    await app.run_polling()
+    app.run_polling(close_loop=False)
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
