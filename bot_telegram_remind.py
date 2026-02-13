@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import datetime, timedelta
-from telegram import Update, ReplyKeyboardMarkup, Bot
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -26,7 +26,6 @@ SCOPES = [
 creds = Credentials.from_service_account_info(cred_info, scopes=SCOPES)
 client = gspread.authorize(creds)
 spreadsheet = client.open(SPREADSHEET_NAME)
-bot = Bot(BOT_TOKEN)
 
 # ================= HELPERS =================
 def rupiah(n):
@@ -73,17 +72,20 @@ def save_record(ws, tipe, amount, note):
         if pengeluaran > pemasukan:
             leak = "YES"
 
-    ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), tipe, amount, note, leak, saldo])
+    ws.append_row([
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        tipe, amount, note, leak, saldo
+    ])
     return pemasukan, pengeluaran, saldo, leak
 
 # ================= DAILY SUMMARY =================
-def send_daily_summary(chat_id):
+async def send_daily_summary(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     ws = get_user_sheet(chat_id)
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     rows = get_rows_by_date(ws, yesterday)
 
     if not rows:
-        bot.send_message(chat_id, f"📭 Tidak ada transaksi kemarin ({yesterday}).")
+        await context.bot.send_message(chat_id, f"📭 Tidak ada transaksi kemarin ({yesterday}).")
         return
 
     pemasukan = sum(int(r["amount"]) for r in rows if r["type"]=="Pemasukan")
@@ -91,29 +93,30 @@ def send_daily_summary(chat_id):
     sisa = pemasukan - pengeluaran
     leak_count = sum(1 for r in rows if r["leak"]=="YES")
 
-    msg = f"📅 Rekapan Keuangan Kemarin ({yesterday})\n\n"
-    msg += f"💰 Total Pemasukan : {rupiah(pemasukan)}\n"
-    msg += f"💸 Total Pengeluaran : {rupiah(pengeluaran)}\n"
-    msg += f"🧮 Sisa dana : {rupiah(sisa)}\n\n"
+    msg = (
+        f"📅 Rekapan Keuangan Kemarin ({yesterday})\n\n"
+        f"💰 Total Pemasukan : {rupiah(pemasukan)}\n"
+        f"💸 Total Pengeluaran : {rupiah(pengeluaran)}\n"
+        f"🧮 Sisa dana : {rupiah(sisa)}\n\n"
+    )
 
     if leak_count > 0:
-        msg += "🚨 Ada pengeluaran melebihi pemasukan (LEAK)\n"
-
+        msg += "🚨 Ada LEAK pengeluaran\n"
     if sisa < pemasukan * 0.2:
-        msg += "⚠️ Hati-hati! Sisa dana tipis, jangan boros hari ini.\n"
+        msg += "⚠️ Sisa dana tipis\n"
     elif sisa > pemasukan * 0.5:
-        msg += "👍 Kondisi keuangan stabil. Bisa rencanakan tabungan/investasi.\n"
+        msg += "👍 Keuangan stabil\n"
 
-    msg += "\nSelamat beraktivitas hari ini! 💪"
-    bot.send_message(chat_id, msg)
+    msg += "\nSelamat beraktivitas 💪"
+    await context.bot.send_message(chat_id, msg)
 
-def send_all_users_summary():
+async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
     for ws in spreadsheet.worksheets():
         if ws.title.startswith("user_"):
             chat_id = int(ws.title.replace("user_", ""))
-            send_daily_summary(chat_id)
+            await send_daily_summary(context, chat_id)
 
-# ================= HANDLER BOT =================
+# ================= HANDLER =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         ["💰 Pemasukan", "💸 Pengeluaran"],
@@ -121,7 +124,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ["📈 Lihat Spreadsheet"],
     ]
     await update.message.reply_text(
-        "🤖 Bot Keuangan Aktif\nKelola keuangan harianmu dengan rapi 💸",
+        "🤖 Bot Keuangan Aktif",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
     )
 
@@ -132,100 +135,56 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text in ["💰 Pemasukan", "💸 Pengeluaran"]:
         context.user_data["type"] = "Pemasukan" if "Pemasukan" in text else "Pengeluaran"
-        await update.message.reply_text("Masukkan nominal transaksi:")
+        await update.message.reply_text("Masukkan nominal:")
 
     elif "type" in context.user_data and text.isdigit():
         context.user_data["amount"] = int(text)
-        await update.message.reply_text("Tambahkan catatan transaksi:")
+        await update.message.reply_text("Masukkan catatan:")
 
     elif "amount" in context.user_data:
-        loading = await update.message.reply_text("⏳ Sedang memproses...")
+        loading = await update.message.reply_text("⏳ Memproses...")
         tipe = context.user_data["type"]
         amount = context.user_data["amount"]
         note = text
         pemasukan, pengeluaran, saldo, leak = save_record(ws, tipe, amount, note)
-        sisa = pemasukan - pengeluaran
         context.user_data.clear()
 
-        msg = (
-            f"✅ {tipe} berhasil dicatat\n\n"
-            f"🗓️ {now_full()}\n\n"
-            f"Nominal : {rupiah(amount)}\n"
-            f"Catatan : {note}\n\n"
-            f"📊 Ringkasan Hari Ini\n"
-            f"• Pemasukan : {rupiah(pemasukan)}\n"
-            f"• Pengeluaran : {rupiah(pengeluaran)}\n"
-            f"• Sisa dana : {rupiah(sisa)}\n"
-        )
-        if pemasukan > 0 and sisa <= pemasukan * 0.2 and leak=="NO":
-            msg += "\n⚠️ Sisa dana hari ini tinggal 20%."
-        if leak=="YES":
-            msg += "\n🚨 LEAK! Pengeluaran melebihi pemasukan."
-
-        await loading.edit_text(msg)
-
-    elif text == "📊 Summary":
-        loading = await update.message.reply_text("⏳ Sedang memproses...")
-        pemasukan = get_total(ws, "Pemasukan")
-        pengeluaran = get_total(ws, "Pengeluaran")
-        saldo = get_last_balance(ws)
         await loading.edit_text(
-            f"📊 SUMMARY HARI INI\n\n"
-            f"🗓️ {now_full()}\n"
-            f"💰 Pemasukan : {rupiah(pemasukan)}\n"
-            f"💸 Pengeluaran : {rupiah(pengeluaran)}\n"
-            f"🧮 Sisa dana : {rupiah(pemasukan - pengeluaran)}\n"
-            f"💼 Saldo total : {rupiah(saldo)}"
+            f"✅ {tipe} dicatat\n"
+            f"{now_full()}\n\n"
+            f"{rupiah(amount)}\n"
+            f"{note}\n\n"
+            f"Sisa: {rupiah(pemasukan - pengeluaran)}"
         )
-
-    elif text == "📋 Catatan Hari Ini":
-        loading = await update.message.reply_text("⏳ Sedang memproses...")
-        data = get_rows_by_date(ws, today())
-        if not data:
-            await loading.edit_text("📭 Belum ada catatan hari ini.")
-            return
-        msg = "📋 CATATAN HARI INI\n\n"
-        for r in data:
-            msg += (
-                f"{r['timestamp']}\n"
-                f"{r['type']} | {rupiah(r['amount'])}\n"
-                f"Sisa : {rupiah(r['saldo_sisa'])}\n"
-                f"Leak : {r['leak']}\n\n"
-            )
-        await loading.edit_text(msg)
 
     elif text == "📈 Lihat Spreadsheet":
-        await update.message.reply_text("📧 Masukkan email untuk dibagikan akses spreadsheet:")
         context.user_data["awaiting_email"] = True
-    elif "awaiting_email" in context.user_data:
+        await update.message.reply_text("📧 Masukkan email:")
+
+    elif context.user_data.get("awaiting_email"):
         email = text
-        ws.share(email, perm_type='user', role='writer', notify=True)
-        await update.message.reply_text(f"✅ Spreadsheet telah dibagikan ke {email}")
+        spreadsheet.share(email, perm_type="user", role="writer", notify=True)
         context.user_data.clear()
+        await update.message.reply_text(f"✅ Spreadsheet dibagikan ke {email}")
 
 # ================= MAIN =================
 if __name__ == "__main__":
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # ===== HANDLERS =====
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # ===== JOB QUEUE DAILY SCHEDULER =====
-    from telegram.ext import ContextTypes
-    job_queue = app.job_queue
+    # HILANGKAN CONFLICT
+    app.bot.delete_webhook(drop_pending_updates=True)
 
-    # hitung detik sampai jam 00:01
+    # DAILY JOB JAM 00:01
     now = datetime.now()
     target = now.replace(hour=0, minute=1, second=0, microsecond=0)
     if now >= target:
         target += timedelta(days=1)
-    delay_seconds = (target - now).total_seconds()
+    delay = (target - now).total_seconds()
 
-    async def daily_summary_job(context: ContextTypes.DEFAULT_TYPE):
-        send_all_users_summary()
-
-    job_queue.run_repeating(daily_summary_job, interval=86400, first=delay_seconds)
+    app.job_queue.run_repeating(daily_summary_job, interval=86400, first=delay)
 
     print("🤖 Bot keuangan running...")
     app.run_polling()
